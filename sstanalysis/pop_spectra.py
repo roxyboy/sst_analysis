@@ -9,11 +9,10 @@ from scipy import signal as sig
 from scipy import fftpack as fft
 from scipy import interpolate as naiso
 import gsw
-# import jmd95
 
 class POPFile(object):
     
-    def __init__(self, fname, areaname='TAREA', maskname='KMT', hmax=None, 
+    def __init__(self, fname, areaname='TAREA', maskname='KMT', 
                  hconst=None, pref=0., ah=-3e17, am=-2.7e18, is3d=False):
         """Wrapper for POP model netCDF files. 
             The units of diffusivity and viscosity are in [cm^4/s]
@@ -22,6 +21,7 @@ class POPFile(object):
         self.Ny, self.Nx = self.nc[areaname].shape  
         self._ah = ah
         self._am = am
+        self.hconst = hconst
         
         ##########
         # mask
@@ -40,10 +40,7 @@ class POPFile(object):
             for k in range(Nz):
                 self.mask3d[k] = (kmt<=k)
           
-        self.ts_forcing = TSForcing(self, hmax=hmax, hconst=hconst)
-        #self.uv_dissipation = UVDissipation(self, hmax=hmax, hconst=hconst)
-        self.hconst = hconst
-        self.hmax = hmax
+        self.ts_forcing = TSForcing(self, hconst=hconst)
         
     def initialize_gradient_operator(self, field='tracer'):
         """Needs to be called before calculating gradients
@@ -53,20 +50,15 @@ class POPFile(object):
         tarea_r = np.ma.masked_invalid(tarea**-1).filled(0.)
         self.tarea_r = tarea_r
 
-        dxt_r = self.nc.DXT.values**-1
-        self.dxt_r = dxt_r
-        dyt_r = self.nc.DYT.values**-1
-        self.dyt_r = dyt_r
-        dxu_r = self.nc.DXU.values**-1
-        self.dxu_r = dxu_r
-        dyu_r = self.nc.DYU.values**-1
-        self.dyu_r = dyu_r
-
         
         ############
         # Tracer
         ############
         if field == 'tracer':
+            dxt_r = self.nc.DXT.values**-1
+            self.dxt_r = dxt_r
+            dyt_r = self.nc.DYT.values**-1
+            self.dyt_r = dyt_r
             ###########
             # raw grid geometry
             ###########
@@ -91,8 +83,6 @@ class POPFile(object):
             self._cs = np.where( kmt & kmts, dts, 0.)
             self._ce = np.where( kmt & kmte, dte, 0.)
             self._cw = np.where( kmt & kmtw, dtw, 0.)
-
-            self._cc = -(self._cn + self._cs + self._ce + self._cw)
             
             #############
             # mixing coefficients
@@ -115,6 +105,10 @@ class POPFile(object):
         elif field == 'momentum':
             p5 = .5
             c2 = 2.
+            dxu_r = self.nc.DXU.values**-1
+            self.dxu_r = dxu_r
+            dyu_r = self.nc.DYU.values**-1
+            self.dyu_r = dyu_r
             hus = self.nc.HUS.values
             hte = self.nc.HTE.values
             huw = self.nc.HUW.values
@@ -188,14 +182,16 @@ class POPFile(object):
             #############
             j_eq = np.argmin(self.nc['ULAT'][:,0].values**2)
             self._amf = np.ma.masked_array((uarea 
-                                   / self.nc['UAREA'].values[j_eq, 0])**1.5, ~self.mask).filled(0.)
+                                   / uarea[j_eq, 0])**1.5, ~self.mask).filled(0.)
     
     def _scalar_laplacian(self, T):
         """ \nabla**2(T) at tracer points
         """
+        cc = -(self._cn + self._cs + self._ce + self._cw)
+        
         if T.ndim == 2:
             return (
-                self._cc*T +
+                cc*T +
                 self._cn*np.roll(T,-1,axis=0) +
                 self._cs*np.roll(T,1,axis=0) +
                 self._ce*np.roll(T,-1,axis=1) +
@@ -203,7 +199,7 @@ class POPFile(object):
             )
         elif T.ndim == 3:
             return (
-                self._cc*T +
+                cc*T +
                 self._cn*np.roll(T,-1,axis=1) +
                 self._cs*np.roll(T,1,axis=1) +
                 self._ce*np.roll(T,-1,axis=2) +
@@ -285,7 +281,7 @@ class POPFile(object):
         
     def biharmonic_tendency(self, field, *args):
         """Calculate tendency due to biharmonic diffusion.
-            Return the values in units [cm^2/s^2]
+            Return the values in units [D^2 s^-1]
         """
         if field == 'tracer':
             assert len(args)==1
@@ -365,6 +361,7 @@ class POPFile(object):
         ##########
         # window
         ##########
+        Ny, Nx = Ti.shape
         windowx = sig.hann(Nx)
         windowy = sig.hann(Ny)
         window = windowx*windowy[:,np.newaxis] 
@@ -380,19 +377,6 @@ class POPFile(object):
         #############
         Ny, Nx = mask.shape
         land_fraction = mask.sum().astype('f8') / (Ny*Nx)
-
-        if land_fraction == 0.:
-            # no problem
-            pass
-        elif land_fraction >= MAX_LAND:
-            crit = 'false'
-            errstr = 'The sector has too much land. land_fraction = ' + str(land_fraction)
-            warnings.warn(errstr)
-            #raise ValueError('The sector has too much land. land_fraction = ' + str(land_fraction))
-        else:    
-            # do some interpolation
-            errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
-            warnings.warn(errstr)
 
         #############
         # step 2: figure out FFT parameters (k, l, etc.) and set up result variable      
@@ -415,6 +399,8 @@ class POPFile(object):
             # step 5: interpolate the missing data (only if necessary)
             ##############
             if land_fraction > 0. and land_fraction < MAX_LAND:
+                errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
+                warnings.warn(errstr)
                 Ti = interpolate_2d(Ti)
             elif land_fraction==0.:
                 # no problem
@@ -502,19 +488,6 @@ class POPFile(object):
         Ny, Nx = mask.shape
         land_fraction = mask.sum().astype('f8') / (Ny*Nx)
 
-        if land_fraction == 0.:
-            # no problem
-            pass
-        elif land_fraction >= MAX_LAND:
-            crit = 'false'
-            errstr = 'The sector has too much land. land_fraction = ' + str(land_fraction)
-            warnings.warn(errstr)
-            #raise ValueError('The sector has too much land. land_fraction = ' + str(land_fraction))
-        else:    
-            # do some interpolation
-            errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
-            warnings.warn(errstr)
-
         #############
         # step 2: figure out FFT parameters (k, l, etc.) and set up result variable      
         #############
@@ -538,6 +511,8 @@ class POPFile(object):
             # step 5: interpolate the missing data (only if necessary)
             ##############
             if land_fraction > 0. and land_fraction < MAX_LAND:
+                errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
+                warnings.warn(errstr)
                 Ti = interpolate_2d(Ti)
             elif land_fraction==0.:
                 pass
@@ -553,7 +528,7 @@ class POPFile(object):
             # step 6: detrend in two dimensions (least squares plane fit)
             # and window the data
             ###############
-            Ti, Pi = [self._detrend_and_window(Q) for Q in (Ti, Pi)]
+            Ti, Pi = [self._detrend_and_window_2d(Q) for Q in (Ti, Pi)]
             
             spac2_sum += Ti*Pi
 
@@ -684,46 +659,39 @@ class POPFile(object):
         region_mask = mask_domain[jmin:jmax, imin:imax] 
         land_fraction = region_mask.sum().astype('f8') / (Ny*Nx)
         
-        if land_fraction == 0.:
-            # no problem
-            pass
-        elif land_fraction >= MAX_LAND:
+        if land_fraction >= MAX_LAND:
             crit = 'false'
             errstr = 'The sector has too much land. land_fraction = ' + str(land_fraction)
             warnings.warn(errstr)
             #raise ValueError('The sector has too much land. land_fraction = ' + str(land_fraction))
-        else:    
-            # do some interpolation
-            errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
-            warnings.warn(errstr)
-        
-        #############
-        # step 4: figure out FFT parameters (k, l, etc.) and set up result variable      
-        #############
-        # Wavenumber step
-        dx_domain = dx[jmin:jmax, imin:imax].copy()
-        dy_domain = dy[jmin:jmax, imin:imax].copy()
-        # PREVIOUS
-        #k = 2*np.pi*fft.fftshift(fft.fftfreq(Nx, dx_domain[Ny/2,Nx/2]))
-        #l = 2*np.pi*fft.fftshift(fft.fftfreq(Ny, dy_domain[Ny/2,Nx/2]))
-        #dk = np.diff(k)[0]*.5/np.pi
-        #dl = np.diff(l)[0]*.5/np.pi
-        k = fft.fftshift(fft.fftfreq(Nx, dx_domain[Ny/2,Nx/2]))
-        l = fft.fftshift(fft.fftfreq(Ny, dy_domain[Ny/2,Nx/2]))
+        else:            
+            #############
+            # step 4: figure out FFT parameters (k, l, etc.) and set up result variable      
+            #############
+            # Wavenumber step
+            dx_domain = dx[jmin:jmax, imin:imax].copy()
+            dy_domain = dy[jmin:jmax, imin:imax].copy()
+            # PREVIOUS
+            #k = 2*np.pi*fft.fftshift(fft.fftfreq(Nx, dx_domain[Ny/2,Nx/2]))
+            #l = 2*np.pi*fft.fftshift(fft.fftfreq(Ny, dy_domain[Ny/2,Nx/2]))
+            #dk = np.diff(k)[0]*.5/np.pi
+            #dl = np.diff(l)[0]*.5/np.pi
+            k = fft.fftshift(fft.fftfreq(Nx, dx_domain[Ny/2,Nx/2]))
+            l = fft.fftshift(fft.fftfreq(Ny, dy_domain[Ny/2,Nx/2]))
 
-        ###################################
-        ###  Start looping through each time step  ####
-        ###################################
-        Nt = T.shape[0]
-        Days = np.arange(daystart, Nt, daylag)
-        #Neff = len(Days)
-        Ti = T[:, jmin:jmax, imin:imax].copy()
-        
-        if len(args) == 1:
-            return self._spectra(Ti, Days, dx_domain, dy_domain, k, l, region_mask, MAX_LAND, nbins, demean)
-        elif len(args) == 2:
-            Pi = P[:, jmin:jmax, imin:imax].copy()
-            return self._cross_spectra(Ti, Pi, Days, dx_domain, dy_domain, k, l, region_mask, MAX_LAND, nbins, demean)
+            ###################################
+            ###  Start looping through each time step  ####
+            ###################################
+            Nt = T.shape[0]
+            Days = np.arange(daystart, Nt, daylag)
+            #Neff = len(Days)
+            Ti = T[:, jmin:jmax, imin:imax].copy()
+
+            if len(args) == 1:
+                return self._spectra(Ti, Days, dx_domain, dy_domain, k, l, region_mask, MAX_LAND, nbins, demean)
+            elif len(args) == 2:
+                Pi = P[:, jmin:jmax, imin:imax].copy()
+                return self._cross_spectra(Ti, Pi, Days, dx_domain, dy_domain, k, l, region_mask, MAX_LAND, nbins, demean)
         
     
 
@@ -851,10 +819,7 @@ class TSDissipation(EOSCalculator):
         if self.hconst is not None:
             H_ml = self.hconst
         else:
-            #H_ml = self.nc.variables[self.mlname].__getitem__(i)/100.
-            H_ml = self.nc[self.mlname].__getitem__(i)
-            if self.hmax is not None:
-                H_ml = np.ma.masked_greater(H_ml, self.hmax).filled(self.hmax)
+            raise ValueError('Need depth scale for the tracer dissipation terms')
         
         FT_mix = H_ml * self.parent.biharmonic_tendency(T0)
         FS_mix = H_ml * self.parent.biharmonic_tendency(S0)
@@ -862,44 +827,4 @@ class TSDissipation(EOSCalculator):
         return [ np.ma.masked_array(F, self.parent.mask) 
                  for F in [FT_mix, FS_mix] ]  
 
-
-#############################################
-# momentum dissipation
-#############################################
-def get_surface_uv(nc, i):
-    """Get the surface velocities: units in [cm/s]
-    """
-    try:
-        U0 = nc['U1_1'].values.__getitem__(i)
-        V0 = nc['V1_1'].values.__getitem__(i)
-    except KeyError:
-        U0 = nc['UVEL'][:, 0, :, :].values.__getitem__(i)
-        V0 = nc['VVEL'][:, 0, :, :].values.__getitem__(i) 
-    return U0, V0
-
-class UVDissipation(EOSCalculator):
-    def __getitem__(self, i):
-        """Calculates the momentum dissipation term
-        """
-        U0, V0 = get_surface_uv(self.nc, i) 
-    
-        ###########
-        # Necessary for dissipation term
-        ###########
-        if self.hconst is not None:
-            H_ml = self.hconst
-        else:
-            #H_ml = self.nc.variables[self.mlname].__getitem__(i)/100.
-            H_ml = self.nc[self.mlname].__getitem__(i)
-            if self.hmax is not None:
-                H_ml = np.ma.masked_greater(H_ml, self.hmax).filled(self.hmax)
-        
-        FU_mix, FV_mix = [H_ml * t for t in self.parent.biharmonic_tendency('momentum', U0, V0)]
-        
-        return [ np.ma.masked_array(F, self.parent.mask) 
-                 for F in [FU_mix, FV_mix] ]  
-
-        
-        
-        
 
