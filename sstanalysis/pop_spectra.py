@@ -13,9 +13,9 @@ import gsw
 class POPFile(object):
     
     def __init__(self, fname, areaname='TAREA', maskname='KMT', 
-                 hconst=None, pref=0., ah=-3e17, am=-2.7e18, is3d=False):
+                 hconst=None, pref=0., ah=-3e9, am=-2.7e10, is3d=False):
         """Wrapper for POP model netCDF files. 
-            The units of diffusivity and viscosity are in [cm^4/s]
+            The units of diffusivity and viscosity are in [m^4/s]
         """
         self.nc = xarray.open_dataset(fname, decode_times=False)
         self.Ny, self.Nx = self.nc[areaname].shape  
@@ -30,9 +30,9 @@ class POPFile(object):
 
         self.is3d = is3d
         if self.is3d:
-            self.z_t = nc['z_t'][:]
-            self.z_w_top = nc['z_w_top'][:]
-            self.z_w_bot = nc['z_w_bop'][:]
+            self.z_t = self.nc['z_t'][:]
+            self.z_w_top = self.nc['z_w_top'][:]
+            self.z_w_bot = self.nc['z_w_bop'][:]
             self.Nz = len(self.z_t)
             kmt = nc['KMT'][:]
             self.mask3d = xray.DataArray(np.zeros((self.Nz, self.Ny, self.Nx), dtype='b'), coords=kmt.coords, dims=kmt.dims)
@@ -48,16 +48,16 @@ class POPFile(object):
         tarea = self.nc.TAREA.values
         self.tarea = tarea
         tarea_r = np.ma.masked_invalid(tarea**-1).filled(0.)
-        self.tarea_r = tarea_r
+        self.tarea_r = 1e4 * tarea_r
 
         
         ############
         # Tracer
         ############
         if field == 'tracer':
-            dxt_r = self.nc.DXT.values**-1
+            dxt_r = 1e2 * self.nc.DXT.values**-1
             self.dxt_r = dxt_r
-            dyt_r = self.nc.DYT.values**-1
+            dyt_r = 1e2 * self.nc.DYT.values**-1
             self.dyt_r = dyt_r
             ###########
             # raw grid geometry
@@ -105,18 +105,18 @@ class POPFile(object):
         elif field == 'momentum':
             p5 = .5
             c2 = 2.
-            dxu_r = self.nc.DXU.values**-1
+            dxu_r = 1e2 * self.nc.DXU.values**-1
             self.dxu_r = dxu_r
-            dyu_r = self.nc.DYU.values**-1
+            dyu_r = 1e2 * self.nc.DYU.values**-1
             self.dyu_r = dyu_r
-            hus = self.nc.HUS.values
-            hte = self.nc.HTE.values
-            huw = self.nc.HUW.values
-            htn = self.nc.HTN.values
+            hus = 1e-2 * self.nc.HUS.values
+            hte = 1e-2 * self.nc.HTE.values
+            huw = 1e-2 * self.nc.HUW.values
+            htn = 1e-2 * self.nc.HTN.values
 
             uarea = self.nc.UAREA.values
             self.uarea = uarea
-            uarea_r = np.ma.masked_invalid(uarea**-1).filled(0.)
+            uarea_r = 1e4 * np.ma.masked_invalid(uarea**-1).filled(0.)
             self.uarea_r = uarea_r
 
             ###########
@@ -401,7 +401,7 @@ class POPFile(object):
             if land_fraction > 0. and land_fraction < MAX_LAND:
                 errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
                 warnings.warn(errstr)
-                Ti = interpolate_2d(Ti)
+                Ti = self._interpolate_2d(Ti)
             elif land_fraction==0.:
                 # no problem
                 pass
@@ -513,7 +513,7 @@ class POPFile(object):
             if land_fraction > 0. and land_fraction < MAX_LAND:
                 errstr = 'The sector has land (land_fraction=%g) but we are interpolating it out.' % land_fraction
                 warnings.warn(errstr)
-                Ti = interpolate_2d(Ti)
+                Ti = self._interpolate_2d(Ti)
             elif land_fraction==0.:
                 pass
             else:
@@ -522,7 +522,7 @@ class POPFile(object):
             NyP, NxP = maskP.shape
             land_fractionP = maskP.sum().astype('f8') / (NyP*NxP)
             if land_fractionP > 0. and land_fractionP < MAX_LAND:
-                Pi = interpolate_2d(Pi)
+                Pi = self._interpolate_2d(Pi)
             
             ###############
             # step 6: detrend in two dimensions (least squares plane fit)
