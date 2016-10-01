@@ -47,8 +47,8 @@ class POPFile(object):
         """
         tarea = self.nc.TAREA.values
         self.tarea = tarea
-        tarea_r = np.ma.masked_invalid(tarea**-1).filled(0.)
-        self.tarea_r = 1e4 * tarea_r
+        tarea_r = 1e4 * np.ma.masked_invalid(tarea**-1).filled(0.)
+        self.tarea_r = tarea_r
 
         
         ############
