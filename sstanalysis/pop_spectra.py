@@ -617,8 +617,6 @@ class POPFile(object):
         imin = xmin
         jmax = ymax
         jmin = ymin
-        Nx = imax - imin
-        Ny = jmax - jmin
 
         dx = 1e-2 * (self.nc[dxname].where(~mask).roll( nlon=roll ).values[
                 jmin_bound:jmax_bound+100, imin_bound:imax_bound+100])
@@ -657,6 +655,7 @@ class POPFile(object):
         mask_domain = ( mask.roll( nlon=roll ).values[jmin_bound:jmax_bound+100, 
                                                 imin_bound:imax_bound+100] )
         region_mask = mask_domain[jmin:jmax, imin:imax] 
+        Ny, Nx = region_mask.shape
         land_fraction = region_mask.sum().astype('f8') / (Ny*Nx)
         
         if land_fraction >= MAX_LAND:
